@@ -8,7 +8,6 @@ from app.schemas.position import PositionResponse
 
 router = APIRouter()
 
-
 @router.post("/portfolios", response_model=PortfolioResponse)
 def create_portfolio(payload: PortfolioCreate, db: Session = Depends(get_db)):
     portfolio = Portfolio(name=payload.name)
@@ -16,7 +15,6 @@ def create_portfolio(payload: PortfolioCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(portfolio)
     return portfolio
-
 
 @router.get("/portfolios/{portfolio_id}/positions", response_model=list[PositionResponse])
 def get_positions(portfolio_id: int, db: Session = Depends(get_db)):
