@@ -1,23 +1,24 @@
 from decimal import Decimal
 from sqlalchemy.orm import Session
-from sqlalchemy import func, cast, Date
+from sqlalchemy import func, case
 import numpy as np
 from app.models.trade import Trade
 
 def compute_portfolio_var(db: Session, portfolio_id: int, confidence: Decimal = Decimal("0.95"), window: int = 30) -> dict:
+    trade_date = func.date(Trade.timestamp).label("trade_date")
     daily_values = (
         db.query(
-            cast(Trade.timestamp, Date).label("trade_date"),
+            trade_date,
             func.sum(
-                func.case(
+                case(
                     (Trade.side == "BUY", Trade.quantity * Trade.price),
                     else_=-Trade.quantity * Trade.price,
                 )
             ).label("daily_value"),
         )
         .filter(Trade.portfolio_id == portfolio_id)
-        .group_by(cast(Trade.timestamp, Date))
-        .order_by(cast(Trade.timestamp, Date))
+        .group_by(func.date(Trade.timestamp))
+        .order_by(func.date(Trade.timestamp))
         .limit(window)
         .all()
     )
