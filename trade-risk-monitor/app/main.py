@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from app.database import engine, Base
 from app.routers.portfolio import router as portfolio_router
 from app.routers.trade import router as trade_router
+from app.routers.simulate import router as simulate_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -14,6 +15,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.include_router(portfolio_router)
 app.include_router(trade_router)
+app.include_router(simulate_router)
 
 @app.get("/health")
 def health_check():
