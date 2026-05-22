@@ -10,3 +10,7 @@ if os.getenv("TESTING") != "True":
 app = FastAPI()
 app.include_router(portfolio_router)
 app.include_router(trade_router)
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
