@@ -8,44 +8,7 @@ The system processes live trade events through a deterministic pipeline that log
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                           CLIENT LAYER                                   │
-│                  cURL  /  Trading UI  /  Simulation Engine                │
-└────────────────────────────────┬─────────────────────────────────────────┘
-                                 │
-                                 ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│                       FastAPI ROUTER LAYER                               │
-│                                                                          │
-│   POST /trades                       POST /portfolios/{id}/simulate      │
-│   GET  /portfolios/{id}/positions    GET  /portfolios/{id}/var           │
-│   POST /portfolios                   GET  /health                        │
-│   GET  /portfolios/{id}/trades                                           │
-└────────────┬─────────────────────────────────────────────────────────────┘
-             │
-             ├──────────────────────────────────┐
-             ▼                                  ▼
-┌───────────────────────────┐    ┌──────────────────────────────────────┐
-│   TRANSACTION LOGGING     │    │   REAL-TIME AGGREGATION ENGINE       │
-│                           │    │                                      │
-│   PostgreSQL 15           │◄──►│   Position Compounding               │
-│   ├── portfolios          │    │   Historical VaR (numpy percentile)  │
-│   ├── trades              │    │   Concentration Breach Detection     │
-│   ├── positions           │    │   Alert Rule Evaluation              │
-│   └── alerts              │    │                                      │
-└───────────────────────────┘    └──────────────┬───────────────────────┘
-                                                │
-                                                ▼
-                                 ┌──────────────────────────────────────┐
-                                 │   CACHE INVALIDATION + SERVING       │
-                                 │                                      │
-                                 │   Redis 7 Key-Value Store            │
-                                 │   ├── Position read isolation        │
-                                 │   ├── X-Cache HIT/MISS headers      │
-                                 │   └── 30-second TTL auto-expiry      │
-                                 └──────────────────────────────────────┘
-```
+![System Architecture](images/architecture.png)
 
 **Request Flow:** Live Trade Event → FastAPI Router → Transaction Logging (PostgreSQL) + Real-Time Aggregation Engine → Cache Invalidation → In-Memory State Serving (Redis)
 
