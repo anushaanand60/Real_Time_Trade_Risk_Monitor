@@ -1,233 +1,308 @@
-# Real-Time Trade Risk Monitor
+# Intelligent Trade Risk Monitor
 
-A high-throughput, low-latency portfolio risk monitoring infrastructure engineered for institutional-grade trade lifecycle management. Built on FastAPI, PostgreSQL, and Redis to deliver real-time trade ingestion, automated position aggregation, historical Value-at-Risk computation, concentration breach detection, and dynamic risk alerting across multi-asset equity portfolios.
-
-The system processes live trade events through a deterministic pipeline that logs transactions, recalculates portfolio-level risk metrics on every state mutation, invalidates stale cache entries, and serves fresh position snapshots from an in-memory key-value store with sub-millisecond read latency.
+Real-time portfolio risk monitoring system built with FastAPI, PostgreSQL, Redis, and a 4-stage ML pipeline. Ingests trades, tracks positions in real time, generates rolling features, detects anomalies, forecasts VaR changes, and classifies risk regimes to trigger alerts.
 
 ---
 
-## Architecture
+## 1. System Architecture
 
-![System Architecture](images/architecture.png)
+```mermaid
+graph TD
+    Ingestion[Trade Ingestion] --> FeatureStore[Feature Store]
+    FeatureStore --> Anomaly[Anomaly Detection <br> Isolation Forest]
+    FeatureStore --> VaR[VaR Forecasting <br> RandomForest / GBM]
+    Anomaly --> Classification[Risk Regime Classification <br> RandomForest / GBM]
+    VaR --> Classification
+    Classification --> AlertEngine[Alert Engine]
+    AlertEngine --> FastAPI[FastAPI APIs]
+```
 
-**Request Flow:** Live Trade Event → FastAPI Router → Transaction Logging (PostgreSQL) + Real-Time Aggregation Engine → Cache Invalidation → In-Memory State Serving (Redis)
+**Data flow**: Live trade → FastAPI router → PostgreSQL logging + feature store update → model pipeline execution → cache eviction → Redis in-memory serving
 
 ---
 
-## Quick Start
+## 2. Repository Structure
 
-### Prerequisites
+```
+Real_Time_Trade_Risk_Monitor/
+├── trade-risk-monitor/
+│   ├── app/
+│   │   ├── core/
+│   │   │   ├── config.py          # app settings, alert thresholds
+│   │   │   └── redis.py           # redis client, cache utilities
+│   │   ├── models/                # SQLAlchemy DB schemas
+│   │   │   ├── alert.py           # triggered alerts
+│   │   │   ├── features.py        # rolling feature snapshots
+│   │   │   ├── portfolio.py       # portfolios
+│   │   │   ├── position.py        # holdings per ticker
+│   │   │   └── trade.py           # trade transaction logs
+│   │   ├── routers/               # API endpoints
+│   │   │   ├── anomaly.py         # anomaly training/scoring
+│   │   │   ├── features.py        # feature store queries
+│   │   │   ├── portfolio.py       # portfolio/position retrieval
+│   │   │   ├── risk_classifier.py # risk regime routes
+│   │   │   ├── simulate.py        # simulation runner
+│   │   │   ├── trade.py           # trade ingestion
+│   │   │   └── var_forecast.py    # VaR forecast routes
+│   │   ├── schemas/               # Pydantic validation
+│   │   ├── services/              # business logic
+│   │   │   ├── alerts.py          # threshold checking
+│   │   │   ├── anomaly_detector.py # Isolation Forest
+│   │   │   ├── feature_generation.py # 25 statistical features
+│   │   │   ├── market_simulator.py # synthetic trade generator
+│   │   │   ├── position.py        # position compounding
+│   │   │   ├── risk.py            # historical VaR (NumPy)
+│   │   │   ├── risk_classifier.py # Random Forest classifier
+│   │   │   └── var_forecaster.py  # VaR change forecasting
+│   │   ├── database.py            # DB connection helper
+│   │   └── main.py                # FastAPI bootstrap
+│   ├── tests/
+│   │   ├── conftest.py            # pytest fixtures
+│   │   ├── test_anomaly.py
+│   │   ├── test_features.py
+│   │   ├── test_risk_classifier.py
+│   │   ├── test_risk_monitor.py
+│   │   └── test_var_forecast.py
+│   ├── docker-compose.yml
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   ├── benchmark.py
+│   └── benchmark_report.json
+├── .gitignore
+└── README.md
+```
 
-- Docker and Docker Compose installed on the host machine.
+---
 
-### Launch the Full Stack
+## 3. Results Summary
+
+**VaR has strong temporal persistence**. Next-day VaR is heavily dependent on current VaR, which makes predicting absolute values trivial but not useful.
+
+**Forecasting risk changes is hard**. Because VaR is persistent, a simple baseline predicting zero change (ΔVaR = 0) actually outperformed our ML models:
+- Random Forest RMSE: 179,034
+- Gradient Boosting RMSE: 185,893
+- Baseline (zero change) RMSE: 145,964
+
+**We had target leakage initially**. The risk classifier was getting the VaR forecast as an input and just learned to map it to quantile thresholds. Got 100% accuracy but learned nothing. Removing that feature forced it to actually learn from exposures, concentration levels, and rolling volatilities.
+
+**After fixing leakage, classification works**. Random Forest achieved 93% test accuracy on Low/Moderate/High/Critical regimes using chronological split (no lookahead).
+
+**Latency is fine for production**. Median end-to-end is 259ms. Could get under 35ms by pre-loading models in memory instead of reading from disk each time.
+
+---
+
+## 4. Performance Metrics
+
+**VaR Forecasting (predicting ΔVaR)**
+
+| Model | MAE | RMSE | R² |
+| :--- | ---: | ---: | ---: |
+| Random Forest Regressor | 79,218 | 179,034 | -0.5044 |
+| Gradient Boosting Regressor | 92,638 | 185,893 | -0.6219 |
+| Persistence Baseline (zero change) | 23,387 | 145,965 | 0.0000 |
+
+**Risk Regime Classification (Low, Moderate, High, Critical)**
+
+| Model | Accuracy | Macro F1 | Weighted F1 |
+| :--- | :---: | :---: | :---: |
+| Random Forest Classifier | 93.0% | 0.5829 | 0.9131 |
+| Gradient Boosting Classifier | 92.0% | 0.5375 | 0.9086 |
+| Logistic Regression | 85.0% | 0.2933 | 0.8542 |
+| Persistence Baseline (previous regime) | 96.0% | 0.7705 | 0.9600 |
+
+*Note: Persistence baseline looks good here because the test set has the portfolio at max size, staying in High/Critical regimes for many consecutive periods.*
+
+---
+
+## 5. Latency Profile
+
+Measured over 150 simulation runs:
+
+| Stage | Mean | Median | P95 | P99 |
+| :--- | ---: | ---: | ---: | ---: |
+| Feature Generation | 41.4 ms | 40.9 ms | 44.4 ms | 48.7 ms |
+| Anomaly Detection | 66.8 ms | 65.7 ms | 73.6 ms | 83.4 ms |
+| VaR Forecasting | 74.5 ms | 71.6 ms | 89.8 ms | 132.4 ms |
+| Risk Classification | 80.8 ms | 79.7 ms | 85.4 ms | 100.4 ms |
+| **Full Pipeline** | **263.6 ms** | **259.1 ms** | **291.9 ms** | **326.0 ms** |
+
+---
+
+## 6. What Went Wrong (And How We Fixed It)
+
+### 6.1 The target formulation problem
+
+Initially we tried to predict absolute next-day VaR. But consecutive VaR values are almost identical in a growing portfolio, so the model looked good without actually learning anything useful.
+
+**Fix**: Redesigned the market simulator to inject volatile regimes, correlation crashes, and exposure shocks. Changed the target to predict the change in VaR (ΔVaR = VaR(t+1) - VaR(t)). Now the baseline is "predict zero change" (R² ≈ 0), so the models actually have to learn something to beat it.
+
+### 6.2 Feature leakage in classification
+
+The classifier was getting the VaR forecast as an input. It just memorized the quantile bounds and hit 100% accuracy without using any exposure or volatility features.
+
+**Fix**: Removed the VaR forecast from classifier inputs. Now it has to learn risk regimes from exposures, rolling volatilities, and concentration metrics (HHI).
+
+### 6.3 Temporal validation requirements
+
+Random k-fold cross-validation on time series causes lookahead bias because rolling windows make adjacent snapshots share overlapping data.
+
+**Fix**: Enforced chronological split (first 80% train, last 20% test). This matches real production where models only see past data to predict future states.
+
+### 6.4 Test set label sparsity
+
+With chronological split, the test set is at the end of the timeline where the portfolio is largest. Most labels are "High" or "Critical", so scikit-learn's confusion_matrix would return 2x2 instead of 4x4 and break our evaluation loops.
+
+**Fix**: Explicitly set `labels=[0, 1, 2, 3]` in confusion matrix calls to guarantee 4x4 shape even if some risk classes don't appear in the test slice.
+
+---
+
+## 7. Key Engineering Decisions
+
+**Redis cache with write-through invalidation**: Positions are read frequently. Instead of hitting PostgreSQL every time, we serve from Redis. When a trade commits to PostgreSQL, we delete the corresponding Redis key. Next read misses cache, fetches from DB, and repopulates Redis (TTL 30s).
+
+**Historical VaR with NumPy**: Instead of assuming normal distributions, we compute VaR directly from actual P&L distributions using NumPy percentiles. Rolling 30-day window at 95% confidence. Returns `insufficient_data` flag if fewer than 10 history points.
+
+**Decimal precision for financial data**: Python floats cause cumulative rounding errors. Used `decimal.Decimal` mapped to PostgreSQL `Numeric(18,4)` with `ROUND_HALF_UP` quantization.
+
+---
+
+## 8. Running the System
+
+### 8.1 Local setup
+
+Python 3.10+ required.
 
 ```bash
 cd trade-risk-monitor
+pip install -r requirements.txt
+```
+
+### 8.2 Docker stack
+
+Spins up PostgreSQL, Redis, and FastAPI:
+
+```bash
 docker-compose up --build -d
 ```
 
-This provisions three isolated containers: the FastAPI web server on port 8000, PostgreSQL 15 on port 5432, and Redis 7 on port 6379. The web container waits for both database and cache healthchecks to pass before accepting traffic.
+- FastAPI: `8000`
+- PostgreSQL: `5432`
+- Redis: `6379`
 
-### Create a Portfolio
+Shut down:
+```bash
+docker-compose down
+```
 
+### 8.3 Running tests
+
+```bash
+# Windows
+$env:PYTHONPATH="."
+pytest
+
+# macOS/Linux
+PYTHONPATH=. pytest
+```
+
+### 8.4 Running benchmark
+
+Simulates trades under volatile regimes, trains all models, computes metrics, measures latency:
+
+```bash
+python benchmark.py --trades 500 --latency-runs 150
+```
+
+---
+
+## 9. API Endpoints
+
+| Method | Route | Description |
+| :---: | :--- | :--- |
+| `POST` | `/portfolios` | Create portfolio |
+| `GET` | `/portfolios/{id}/positions` | Get positions (Redis cache with SQL fallback) |
+| `GET` | `/portfolios/{id}/var` | Get historical VaR profile |
+| `POST` | `/trades` | Ingest trade, update position, run models |
+| `GET` | `/portfolios/{id}/trades` | Get trade history |
+| `GET` | `/portfolios/{id}/features/latest` | Latest feature snapshot |
+| `GET` | `/portfolios/{id}/features/history` | Paginated feature history |
+| `POST` | `/anomaly/train` | Train Isolation Forest |
+| `GET` | `/portfolios/{id}/anomaly/score` | Latest anomaly score |
+| `POST` | `/var/train` | Train VaR forecasting models |
+| `GET` | `/portfolios/{id}/var/forecast` | Latest VaR forecast |
+| `POST` | `/risk-classifier/train` | Train risk regime classifiers |
+| `GET` | `/portfolios/{id}/risk-regime` | Current risk regime |
+| `POST` | `/portfolios/{id}/simulate` | Run mock trade sequence |
+| `POST` | `/portfolios/{id}/simulate-data` | Generate synthetic training data |
+| `GET` | `/health` | Service health check |
+
+---
+
+## 10. API Examples (curl)
+
+With Docker running or local uvicorn (`uvicorn app.main:app --port 8000` from `trade-risk-monitor/`):
+
+**Create portfolio:**
 ```bash
 curl -X POST http://localhost:8000/portfolios \
   -H "Content-Type: application/json" \
   -d '{"name": "QuantFund Alpha"}'
 ```
 
-### Run the 100-Trade Bulk Simulation
-
+**Generate synthetic training data (500 trades):**
 ```bash
-curl -X POST http://localhost:8000/portfolios/1/simulate
+curl -X POST "http://localhost:8000/portfolios/1/simulate-data?num_trades=500"
 ```
 
-This wipes existing portfolio state, executes 100 randomized trades across AAPL, GOOGL, MSFT, AMZN, and TSLA through the full ingestion pipeline, and returns a summary payload containing final positions, net worth valuation, VaR metrics, and all triggered risk alerts.
-
-### Query Cached Positions
-
+**Train ML models:**
 ```bash
-curl -i http://localhost:8000/portfolios/1/positions
+curl -X POST http://localhost:8000/anomaly/train -H "Content-Type: application/json" -d '{"contamination": 0.01}'
+curl -X POST http://localhost:8000/var/train -H "Content-Type: application/json" -d '{}'
+curl -X POST http://localhost:8000/risk-classifier/train -H "Content-Type: application/json" -d '{}'
 ```
 
-Inspect the `X-Cache` response header: `HIT` indicates a Redis cache serve, `MISS` indicates a fresh PostgreSQL query with subsequent cache population.
-
-### Check Portfolio Value-at-Risk
-
-```bash
-curl http://localhost:8000/portfolios/1/var
-```
-
-### Submit an Individual Trade
-
+**Ingest a trade:**
 ```bash
 curl -X POST http://localhost:8000/trades \
   -H "Content-Type: application/json" \
-  -d '{"portfolio_id": 1, "ticker": "AAPL", "quantity": "50", "price": "178.2300", "side": "BUY"}'
+  -d '{"portfolio_id": 1, "ticker": "AAPL", "quantity": 1500.0, "price": 175.50, "side": "BUY"}'
 ```
 
-### Verify System Health
-
+**Get positions (check cache header):**
 ```bash
-curl http://localhost:8000/health
+curl -i http://localhost:8000/portfolios/1/positions
+```
+Look for `X-Cache: HIT` (cached) or `X-Cache: MISS` (DB fetch).
+
+**Get risk assessments:**
+```bash
+curl http://localhost:8000/portfolios/1/anomaly/score
+curl http://localhost:8000/portfolios/1/var/forecast
+curl http://localhost:8000/portfolios/1/risk-regime
 ```
 
 ---
 
-## API Endpoints
+## 11. Production Deployment (Render)
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/portfolios` | Create a new portfolio |
-| `POST` | `/trades` | Ingest a trade, update positions, evaluate alerts |
-| `GET` | `/portfolios/{id}/positions` | Fetch cached positions (Redis → PostgreSQL fallback) |
-| `GET` | `/portfolios/{id}/trades` | Paginated trade history |
-| `GET` | `/portfolios/{id}/var` | Historical Value-at-Risk calculation |
-| `POST` | `/portfolios/{id}/simulate` | Execute 100-trade bulk simulation |
-| `GET` | `/health` | Container healthcheck probe |
+**Provision services:**
+1. Managed PostgreSQL on Render (save connection string)
+2. Managed Redis on Render (save access URL)
+3. Web service pointing to repo, root directory = `trade-risk-monitor`
 
----
+**Environment variables:**
 
-## Architectural Design Rationale
+| Variable | Description | Example |
+| :--- | :--- | :--- |
+| `DATABASE_URL` | PostgreSQL connection | `postgresql://user:pass@host:5432/db` |
+| `REDIS_URL` | Redis connection | `redis://user:pass@host:6379` |
+| `VAR_THRESHOLD` | VaR alert threshold | `1000000.0000` |
+| `CONCENTRATION_THRESHOLD` | Concentration alert threshold | `0.4000` |
 
-### Redis for High-Throughput Position Read Isolation
-
-Position queries represent the highest-frequency read pattern in a live trading system. Serving these directly from PostgreSQL under concurrent load introduces connection pool contention and query execution latency that compounds at scale. Redis provides deterministic O(1) key lookups with sub-millisecond response times, decoupling read-heavy position queries from the transactional write path entirely.
-
-The cache invalidation strategy is write-through: every trade ingestion event atomically deletes the corresponding portfolio position cache key after the database transaction commits. Subsequent reads trigger a cache miss, repopulate from PostgreSQL, and serve all following requests from memory until the 30-second TTL expires or another trade invalidates the entry. This guarantees eventual consistency within a bounded staleness window while eliminating redundant database round-trips for repeated position lookups.
-
-The `X-Cache: HIT/MISS` response header provides operational visibility into cache utilization rates without requiring separate monitoring infrastructure.
-
-### Empirical Historical VaR Over Statistical Assumptions
-
-The Value-at-Risk implementation uses the Historical Simulation method rather than parametric (variance-covariance) or Monte Carlo approaches. Historical VaR computes risk directly from observed P&L distributions using numpy percentile calculations, making zero assumptions about the normality of return distributions.
-
-This is a deliberate engineering decision. Parametric VaR assumes normally distributed returns, which systematically underestimates tail risk during market stress events where fat tails and volatility clustering dominate. Historical VaR captures the actual empirical distribution of portfolio-level daily P&L changes, including any skewness, kurtosis, or regime-dependent behavior present in the observed data.
-
-The 30-day rolling window with a 95% confidence level balances responsiveness to recent market conditions against statistical stability. The minimum threshold of 10 daily P&L observations prevents spurious VaR estimates from insufficient sample sizes by returning an explicit `insufficient_data` flag rather than a misleading numeric value.
-
-### Financial-Grade Decimal Precision Enforcement
-
-All monetary calculations use Python's `decimal.Decimal` type with explicit 4-decimal-place precision (`Numeric(18, 4)` at the database layer). IEEE 754 floating-point arithmetic introduces representation errors that compound through sequential position averaging, P&L aggregation, and concentration ratio calculations. A single trade priced at `178.23` can accumulate rounding drift across hundreds of position updates, producing portfolio valuations that diverge measurably from the mathematically correct result.
-
-Decimal arithmetic eliminates this class of errors entirely. The `ROUND_HALF_UP` quantization policy ensures deterministic rounding behavior consistent with financial accounting standards. Every value crossing a system boundary — from trade ingestion through position compounding to VaR output — maintains exact decimal representation without silent precision loss.
-
----
-
-## Production Deployment on Render
-
-### Infrastructure Setup
-
-1. **PostgreSQL Database**: Create a managed PostgreSQL instance on Render. Copy the internal connection string provided by the dashboard.
-
-2. **Redis Instance**: Create a managed Redis instance on Render. Copy the internal Redis URL.
-
-3. **Web Service**: Create a new Web Service pointing to this repository. Set the root directory to `trade-risk-monitor` and configure the build and start commands:
-
-   - **Build Command**: `pip install -r requirements.txt`
-   - **Start Command**: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-
-### Environment Variables
-
-Configure the following environment variables on the Render web service dashboard:
-
-| Variable | Value |
-|----------|-------|
-| `DATABASE_URL` | `postgresql://user:password@host:5432/dbname` (from Render PostgreSQL) |
-| `REDIS_URL` | `redis://user:password@host:6379` (from Render Redis) |
-| `VAR_THRESHOLD` | `1000000.0000` |
-| `CONCENTRATION_THRESHOLD` | `0.4000` |
-
-### Database Migration with Alembic
-
-After configuring the production database, run the initial schema migration:
-
+**Database migrations:**
 ```bash
 cd trade-risk-monitor
 alembic init alembic
-```
-
-Update `alembic/env.py` to import your SQLAlchemy `Base` metadata and `DATABASE_URL` from the application config. Then generate and apply the migration:
-
-```bash
 alembic revision --autogenerate -m "initial schema"
 alembic upgrade head
-```
-
-For subsequent deployments, run `alembic upgrade head` as part of the build or release phase to apply any pending schema changes to the production database safely.
-
----
-
-## Future Engineering Enhancements
-
-### Real-Time WebSocket Streaming
-
-Replace the current request-response polling model with persistent WebSocket connections that push position updates, VaR recalculations, and alert notifications to connected clients the instant a trade is processed. This eliminates polling latency entirely and enables live dashboard rendering where portfolio metrics update in-place as the order book evolves. FastAPI's native WebSocket support combined with Redis Pub/Sub as the broadcast backbone would deliver fan-out to multiple concurrent client sessions without coupling the trade ingestion path to the notification delivery path.
-
-### Event-Driven Architecture with Kafka
-
-Introduce Apache Kafka as an intermediate message broker between the trade ingestion layer and the downstream analytics pipeline. Each incoming trade publishes an event to a partitioned Kafka topic, decoupling the synchronous HTTP response from the asynchronous position recalculation, VaR computation, and alert evaluation. This architecture enables horizontal scaling of analytics consumers independently from the API layer, provides durable event replay for auditing and backtesting, and guarantees exactly-once processing semantics for trade lifecycle events through consumer group offset management.
-
-### Advanced Risk Model Calculations
-
-Extend the current Historical VaR implementation with two complementary methodologies. **Variance-Covariance VaR** would model the joint distribution of asset returns using a covariance matrix estimated from historical price data, enabling faster computation for large multi-asset portfolios where the full historical simulation becomes computationally expensive. **Monte Carlo VaR** would generate thousands of simulated portfolio return paths using stochastic processes calibrated to observed volatility and correlation structures, capturing non-linear risk exposures from options and derivatives that analytical methods cannot represent. Implementing all three approaches in parallel would allow risk managers to compare model outputs and identify divergences that signal regime changes or model specification errors.
-
----
-
-## Technology Stack
-
-| Component | Technology | Version |
-|-----------|-----------|---------|
-| API Framework | FastAPI | 0.115.0 |
-| ASGI Server | Uvicorn | 0.30.6 |
-| ORM | SQLAlchemy | 2.0.35 |
-| Validation | Pydantic | 2.9.2 |
-| Database | PostgreSQL | 15 |
-| Cache | Redis | 7 |
-| Numerical Computing | NumPy | 1.26.4 |
-| Migrations | Alembic | 1.13.2 |
-| Containerization | Docker + Compose | 3.9 |
-
----
-
-## Project Structure
-
-```
-trade-risk-monitor/
-├── app/
-│   ├── __init__.py
-│   ├── main.py
-│   ├── database.py
-│   ├── core/
-│   │   ├── __init__.py
-│   │   ├── config.py
-│   │   └── redis.py
-│   ├── models/
-│   │   ├── __init__.py
-│   │   ├── portfolio.py
-│   │   ├── trade.py
-│   │   ├── position.py
-│   │   └── alert.py
-│   ├── schemas/
-│   │   ├── __init__.py
-│   │   ├── portfolio.py
-│   │   ├── trade.py
-│   │   └── position.py
-│   ├── routers/
-│   │   ├── __init__.py
-│   │   ├── portfolio.py
-│   │   ├── trade.py
-│   │   └── simulate.py
-│   └── services/
-│       ├── __init__.py
-│       ├── position.py
-│       ├── risk.py
-│       └── alerts.py
-├── tests/
-│   └── test_risk_monitor.py
-├── Dockerfile
-├── docker-compose.yml
-├── requirements.txt
-└── .dockerignore
 ```
