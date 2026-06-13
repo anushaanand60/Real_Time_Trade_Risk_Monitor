@@ -1,3 +1,8 @@
 from app.services.position import update_position_logic
 from app.services.risk import compute_portfolio_var
 from app.services.alerts import run_post_trade_alerts
+from app.services.feature_generation import generate_features_for_trade
+from app.services.anomaly_detector import score_anomaly, train_global_anomaly_model
+from app.services.market_simulator import generate_simulation_data
+from app.services.var_forecaster import train_var_forecaster, predict_var_forecast
+from app.services.risk_classifier import train_risk_classifier, predict_risk_regime

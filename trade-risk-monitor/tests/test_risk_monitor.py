@@ -1,3 +1,5 @@
+import os
+os.environ["TESTING"] = "True"
 import pytest
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
@@ -7,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from app.database import Base, get_db
 from app.main import app
 
-SQLALCHEMY_TEST_URL = "sqlite:///./test_day2.db"
+SQLALCHEMY_TEST_URL = "sqlite:///./test_risk_engine.db"
 engine = create_engine(SQLALCHEMY_TEST_URL, connect_args={"check_same_thread": False})
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -33,6 +35,7 @@ def mock_redis_delete(key):
 
 @pytest.fixture(autouse=True)
 def setup_db():
+    print("RISK KEYS:", Base.metadata.tables.keys())
     Base.metadata.create_all(bind=engine)
     mock_redis_store.clear()
     yield
@@ -78,7 +81,7 @@ def test_concentration_breach_alert(client):
     r = client.post("/trades", json={"portfolio_id": pid, "ticker": "MSFT", "quantity": "90", "price": "100.0000", "side": "BUY"})
     alerts = r.json()["alerts"]
     concentration_alerts = [a for a in alerts if a["alert_type"] == "CONCENTRATION_BREACH"]
-    assert len(concentration_alerts) >= 1
+    assert len(concentration_alerts)>=1
     assert "MSFT" in concentration_alerts[0]["message"]
 
 def test_var_insufficient_data(client):
@@ -99,7 +102,7 @@ def test_avg_price_precision_multiple_buys(client):
     positions = client.get(f"/portfolios/{pid}/positions").json()
     nvda = [p for p in positions if p["ticker"] == "NVDA"][0]
     net_qty = Decimal("100")
-    expected_avg = (Decimal("33") * Decimal("127.3300") + Decimal("17") * Decimal("213.7700") + Decimal("50") * Decimal("99.1234")) / net_qty
+    expected_avg = (Decimal("33")*Decimal("127.3300")+Decimal("17")*Decimal("213.7700")+Decimal("50")*Decimal("99.1234"))/net_qty
     assert Decimal(nvda["net_quantity"]) == net_qty
     actual_avg = Decimal(nvda["avg_price"])
-    assert abs(actual_avg - expected_avg) < Decimal("0.0001")
+    assert abs(actual_avg-expected_avg)<Decimal("0.0001")
