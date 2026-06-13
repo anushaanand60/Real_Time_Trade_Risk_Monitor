@@ -9,13 +9,13 @@ from app.core.config import settings
 def check_concentration(db: Session, trade: Trade) -> list[Alert]:
     alerts = []
     positions = db.query(Position).filter(Position.portfolio_id == trade.portfolio_id).all()
-    total_value = sum(abs(p.net_quantity * p.avg_price) for p in positions)
+    total_value = sum(abs(p.net_quantity*p.avg_price) for p in positions)
     if total_value == Decimal("0"):
         return alerts
     for p in positions:
-        position_value = abs(p.net_quantity * p.avg_price)
-        concentration = position_value / total_value
-        if concentration > settings.CONCENTRATION_THRESHOLD:
+        position_value = abs(p.net_quantity*p.avg_price)
+        concentration = position_value/total_value
+        if concentration >settings.CONCENTRATION_THRESHOLD:
             alert = Alert(
                 portfolio_id=trade.portfolio_id,
                 alert_type="CONCENTRATION_BREACH",
@@ -27,7 +27,7 @@ def check_concentration(db: Session, trade: Trade) -> list[Alert]:
 
 def check_var_breach(db: Session, trade: Trade) -> list[Alert]:
     alerts = []
-    result = compute_portfolio_var(db, trade.portfolio_id)
+    result = compute_portfolio_var(db, trade.portfolio_id, as_of=trade.timestamp)
     if not result["insufficient_data"] and result["var_value"] > settings.VAR_THRESHOLD:
         alert = Alert(
             portfolio_id=trade.portfolio_id,
